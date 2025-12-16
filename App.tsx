@@ -23,7 +23,7 @@ const App: React.FC = () => {
               MUNNY <span className="text-gray-600 font-light">Analytics</span>
             </h1>
             <p className="text-lg text-gray-600 max-w-2xl mx-auto">
-            
+              Transforme seus dados de vendas em insights visuais poderosos com a identidade da sua marca.
             </p>
           </div>
           <DataUploader onDataLoaded={handleDataLoaded} />
@@ -36,5 +36,3 @@ const App: React.FC = () => {
 };
 
 export default App;
-
-
