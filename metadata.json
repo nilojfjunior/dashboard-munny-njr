@@ -1,0 +1,5 @@
+{
+  "name": "MUNNY - Dashboard Produtos Vendidos Sem AI",
+  "description": "Uma dashboard interativa para visualização de dados de vendas da MUNNY, com análise de lojas, categorias, cores e tamanhos.",
+  "requestFramePermissions": []
+}
