@@ -3,26 +3,27 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, 
   PieChart, Pie, Cell, LabelList
 } from 'recharts';
-import { CleanedSaleRecord, DetailedTableRow } from '../types';
+import { CleanedSaleRecord, DetailedTableRow, CorteRecord } from '../types';
 import { aggregateBy, calculateMetrics, formatCurrency, formatNumber, sortSizes, prepareDataTable } from '../services/dataProcessing';
-import { Store, ShoppingBag, TrendingUp, Tag, Filter, XCircle, Calendar, DollarSign, Box, Percent, Search, ChevronLeft, ChevronRight, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react';
+import { Store, ShoppingBag, TrendingUp, Tag, Filter, XCircle, Calendar, DollarSign, Box, Percent, Search, ChevronLeft, ChevronRight, ArrowUpDown, ArrowUp, ArrowDown, Scissors, AlertTriangle } from 'lucide-react';
 
 interface DashboardProps {
   data: CleanedSaleRecord[];
+  corteData: CorteRecord[];
   onReset: () => void;
 }
 
 // Munny Brand Colors
 const BRAND_PRIMARY = '#adb85c';
 const BRAND_SECONDARY = '#e5eaf3';
-const BRAND_DARK = '#8d9648'; // A darker shade of primary for gradients/hovers
+const BRAND_DARK = '#8d9648'; 
 
 const COLORS = [BRAND_PRIMARY, '#d4db9b', '#7e8543', '#f0f2da', '#606633', '#cdd66f', '#e2e6b8', '#9ca653'];
 
 type SortKey = keyof DetailedTableRow;
 type SortDirection = 'asc' | 'desc';
 
-const Dashboard: React.FC<DashboardProps> = ({ data, onReset }) => {
+const Dashboard: React.FC<DashboardProps> = ({ data, corteData, onReset }) => {
   // Filter States
   const [selectedStore, setSelectedStore] = useState<string>('all');
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
@@ -44,22 +45,18 @@ const Dashboard: React.FC<DashboardProps> = ({ data, onReset }) => {
   const [rowsPerPage, setRowsPerPage] = useState(10);
   const [currentPage, setCurrentPage] = useState(1);
 
-  // Calculate Data Constraints
+  // 1. Calculate Data Constraints (Dates)
   const { minAllowedDate, maxAllowedDate } = useMemo(() => {
     if (data.length === 0) return { minAllowedDate: '', maxAllowedDate: '' };
-    
     const sortedDates = [...data].map(d => d.data).sort();
-    const minFull = sortedDates[0];
-    const maxFull = sortedDates[sortedDates.length - 1];
-    
     return {
-      minAllowedDate: minFull ? minFull.substring(0, 7) : '',
-      maxAllowedDate: maxFull ? maxFull.substring(0, 7) : ''
+      minAllowedDate: sortedDates[0] ? sortedDates[0].substring(0, 7) : '',
+      maxAllowedDate: sortedDates[sortedDates.length - 1] ? sortedDates[sortedDates.length - 1].substring(0, 7) : ''
     };
   }, [data]);
 
   useEffect(() => {
-    if (minAllowedDate && maxAllowedDate) {
+    if (minAllowedDate && maxAllowedDate && !dateRange.start) {
       setDateRange({ start: minAllowedDate, end: maxAllowedDate });
     }
   }, [minAllowedDate, maxAllowedDate]);
@@ -68,26 +65,33 @@ const Dashboard: React.FC<DashboardProps> = ({ data, onReset }) => {
   const categoryOptions = useMemo(() => Array.from(new Set(data.map(d => d.categoria))).sort(), [data]);
   const colecaoOptions = useMemo(() => Array.from(new Set(data.map(d => d.colecao))).sort(), [data]);
 
-  // Apply filters
-  const filteredData = useMemo(() => {
+  // 2. Build Metadata Map (Code -> Category/Collection) to enable filtering on CorteData
+  // Since CorteData usually lacks Category/Collection info, we borrow it from Sales History.
+  const productMetaMap = useMemo(() => {
+    const map = new Map<string, { cat: string, col: string }>();
+    data.forEach(item => {
+      // We normalize the code to ensure matching
+      const key = String(item.codigo).trim();
+      if (!map.has(key)) {
+        map.set(key, { cat: item.categoria, col: item.colecao });
+      }
+    });
+    return map;
+  }, [data]);
+
+  // 3. Filter SALES Data
+  const filteredSalesData = useMemo(() => {
     const term = searchCode.toLowerCase().trim();
 
     return data.filter(item => {
-      // 1. Store Filter
       const storeMatch = selectedStore === 'all' || item.loja === selectedStore;
-      
-      // 2. Category Filter
       const catMatch = selectedCategory === 'all' || item.categoria === selectedCategory;
-
-      // 3. Collection Filter
       const colMatch = selectedColecao === 'all' || item.colecao === selectedColecao;
       
-      // 4. Date Filter
       let dateMatch = true;
       if (dateRange.start && item.data < `${dateRange.start}-01`) dateMatch = false;
       if (dateRange.end && item.data > `${dateRange.end}-31`) dateMatch = false;
 
-      // 5. Code Search
       let codeMatch = true;
       if (term) {
         codeMatch = String(item.codigo).toLowerCase().includes(term);
@@ -97,25 +101,56 @@ const Dashboard: React.FC<DashboardProps> = ({ data, onReset }) => {
     });
   }, [data, selectedStore, selectedCategory, selectedColecao, dateRange, searchCode]);
 
+  // 4. Filter CORTE Data (Apply same filters: Category, Collection, Code Search)
+  const filteredCorteData = useMemo(() => {
+    const term = searchCode.toLowerCase().trim();
+
+    // If no structural filters are applied, return all (unless searching code)
+    if (selectedCategory === 'all' && selectedColecao === 'all' && !term) {
+      return corteData;
+    }
+
+    return corteData.filter(item => {
+      const key = String(item.codigo).trim();
+      const meta = productMetaMap.get(key);
+      
+      const itemCat = meta?.cat || 'Outros';
+      const itemCol = meta?.col || 'N/A';
+
+      const catMatch = selectedCategory === 'all' || itemCat === selectedCategory;
+      const colMatch = selectedColecao === 'all' || itemCol === selectedColecao;
+      
+      let codeMatch = true;
+      if (term) {
+        codeMatch = key.toLowerCase().includes(term);
+      }
+
+      return catMatch && colMatch && codeMatch;
+    });
+  }, [corteData, productMetaMap, selectedCategory, selectedColecao, searchCode]);
+
+
   const valueKey = metricMode === 'revenue' ? 'valorTotal' : 'quantidade';
 
-  // Aggregations
-  const metrics = useMemo(() => calculateMetrics(filteredData), [filteredData]);
-  const byStore = useMemo(() => aggregateBy(filteredData, 'loja', valueKey), [filteredData, valueKey]);
-  const byCategory = useMemo(() => aggregateBy(filteredData, 'categoria', valueKey), [filteredData, valueKey]);
-  const bySubCategory = useMemo(() => aggregateBy(filteredData, 'subCategoria', valueKey), [filteredData, valueKey]);
-  const byColor = useMemo(() => aggregateBy(filteredData, 'cor', valueKey), [filteredData, valueKey]);
-  const byColecao = useMemo(() => aggregateBy(filteredData, 'colecao', valueKey), [filteredData, valueKey]);
-  const byModelo = useMemo(() => aggregateBy(filteredData, 'modelo', valueKey), [filteredData, valueKey]);
+  // Aggregations & Metrics (Using Filtered Lists for both Sales and Cuts)
+  const metrics = useMemo(() => calculateMetrics(filteredSalesData, filteredCorteData), [filteredSalesData, filteredCorteData]);
+  
+  const byStore = useMemo(() => aggregateBy(filteredSalesData, 'loja', valueKey), [filteredSalesData, valueKey]);
+  const byCategory = useMemo(() => aggregateBy(filteredSalesData, 'categoria', valueKey), [filteredSalesData, valueKey]);
+  const bySubCategory = useMemo(() => aggregateBy(filteredSalesData, 'subCategoria', valueKey), [filteredSalesData, valueKey]);
+  const byColor = useMemo(() => aggregateBy(filteredSalesData, 'cor', valueKey), [filteredSalesData, valueKey]);
+  const byColecao = useMemo(() => aggregateBy(filteredSalesData, 'colecao', valueKey), [filteredSalesData, valueKey]);
+  const byModelo = useMemo(() => aggregateBy(filteredSalesData, 'modelo', valueKey), [filteredSalesData, valueKey]);
   
   const bySize = useMemo(() => {
-    const rawSizes = aggregateBy(filteredData, 'tamanho', valueKey);
+    const rawSizes = aggregateBy(filteredSalesData, 'tamanho', valueKey);
     return sortSizes(rawSizes);
-  }, [filteredData, valueKey]);
+  }, [filteredSalesData, valueKey]);
 
   // Table Data Processing
   const tableData: DetailedTableRow[] = useMemo(() => {
-    const prepared = prepareDataTable(filteredData);
+    // Pass both FILTERED lists to the table generator
+    const prepared = prepareDataTable(filteredSalesData, filteredCorteData);
 
     return prepared.sort((a, b) => {
       const aValue = a[sortConfig.key];
@@ -136,7 +171,7 @@ const Dashboard: React.FC<DashboardProps> = ({ data, onReset }) => {
         return bString.localeCompare(aString);
       }
     });
-  }, [filteredData, sortConfig]);
+  }, [filteredSalesData, filteredCorteData, sortConfig]);
 
   // Pagination
   const totalPages = Math.ceil(tableData.length / rowsPerPage);
@@ -164,6 +199,7 @@ const Dashboard: React.FC<DashboardProps> = ({ data, onReset }) => {
     return metricMode === 'revenue' ? formatCurrency(val) : formatNumber(val);
   };
 
+  // ... (Keep existing chart render functions: CustomTooltip, renderCustomizedLabel, etc.) ...
   const CustomTooltip = ({ active, payload, label }: any) => {
     if (active && payload && payload.length) {
       return (
@@ -220,7 +256,6 @@ const Dashboard: React.FC<DashboardProps> = ({ data, onReset }) => {
     );
   };
 
-  // Helper component for Sortable Header
   const SortableHeader = ({ label, sortKey, align = 'left' }: { label: string, sortKey: SortKey, align?: 'left' | 'right' }) => (
     <th 
       className={`px-6 py-3 cursor-pointer hover:bg-gray-100 transition-colors group ${align === 'right' ? 'text-right' : 'text-left'}`}
@@ -375,7 +410,7 @@ const Dashboard: React.FC<DashboardProps> = ({ data, onReset }) => {
           <div className={`p-6 rounded-xl shadow-sm border transition-all bg-white border-[#adb85c]/30 ring-1 ring-[#adb85c]/10`}>
             <div className="flex items-start justify-between">
               <div>
-                <p className="text-sm font-medium text-gray-500">Peças Vendidas</p>
+                <p className="text-sm font-medium text-gray-500">Peças Vendidas (Período)</p>
                 <h3 className="text-2xl font-bold text-gray-900 mt-1">{formatNumber(metrics.totalItems)}</h3>
               </div>
               <div className="p-2 bg-[#f4f6e6] rounded-lg text-[#adb85c]">
@@ -386,12 +421,33 @@ const Dashboard: React.FC<DashboardProps> = ({ data, onReset }) => {
 
           <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 flex items-start justify-between">
             <div>
-              <p className="text-sm font-medium text-gray-500">% Vendido (Giro)</p>
+              <p className="text-sm font-medium text-gray-500">Peças Cortadas (Filtro)</p>
+               <h3 className="text-2xl font-bold text-gray-900 mt-1">
+                  {formatNumber(metrics.totalCut)}
+               </h3>
+               {metrics.totalCut > 0 ? (
+                 <p className={`text-xs mt-1 font-medium ${
+                     metrics.totalItems > metrics.totalCut ? 'text-purple-600' : 'text-gray-500'
+                 }`}>
+                    {((metrics.totalItems / metrics.totalCut) * 100).toFixed(1)}% de giro (venda/corte)
+                 </p>
+               ) : (
+                 <p className="text-xs text-red-400 mt-1">Sem corte para este filtro</p>
+               )}
+            </div>
+            <div className="p-2 bg-[#f4f6e6] rounded-lg text-[#adb85c]">
+              <Scissors className="w-6 h-6" />
+            </div>
+          </div>
+
+          <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 flex items-start justify-between">
+            <div>
+              <p className="text-sm font-medium text-gray-500">Giro (Venda / Estoque)</p>
               <div className="flex items-baseline gap-2 mt-1">
                  <h3 className="text-2xl font-bold text-gray-900">
                     {metrics.sellThroughRate.toFixed(1)}%
                  </h3>
-                 <span className="text-xs text-gray-400 font-medium">de {formatNumber(metrics.totalItems + metrics.totalStock)} peças</span>
+                 <span className="text-xs text-gray-400 font-medium">de {formatNumber(metrics.totalItems + metrics.totalStock)} itens</span>
               </div>
               <div className="w-full bg-gray-200 rounded-full h-1.5 mt-2">
                 <div className="bg-[#adb85c] h-1.5 rounded-full" style={{ width: `${Math.min(metrics.sellThroughRate, 100)}%` }}></div>
@@ -399,16 +455,6 @@ const Dashboard: React.FC<DashboardProps> = ({ data, onReset }) => {
             </div>
             <div className="p-2 bg-[#f4f6e6] rounded-lg text-[#adb85c]">
               <Percent className="w-6 h-6" />
-            </div>
-          </div>
-
-          <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 flex items-start justify-between">
-            <div>
-              <p className="text-sm font-medium text-gray-500">Melhor Loja</p>
-              <h3 className="text-xl font-bold text-gray-900 mt-1">{metrics.topStore}</h3>
-            </div>
-            <div className="p-2 bg-[#f4f6e6] rounded-lg text-[#adb85c]">
-              <Store className="w-6 h-6" />
             </div>
           </div>
         </div>
@@ -585,31 +631,52 @@ const Dashboard: React.FC<DashboardProps> = ({ data, onReset }) => {
                   <SortableHeader label="Qtd. Cortada" sortKey="qtdCortada" align="right" />
                   <SortableHeader label="Qtd. Vendida" sortKey="qtdVendida" align="right" />
                   <SortableHeader label="Faturado (R$)" sortKey="faturado" align="right" />
-                  <SortableHeader label="% Venda/Corte" sortKey="percentualVendido" align="right" />
+                  <SortableHeader label="% Giro (Venda/Corte)" sortKey="percentualVendido" align="right" />
                 </tr>
               </thead>
               <tbody>
                 {paginatedTableData.length > 0 ? (
-                  paginatedTableData.map((row) => (
-                    <tr key={row.id} className="bg-white border-b hover:bg-gray-50 transition-colors">
-                      <td className="px-6 py-4 font-medium text-gray-900">{row.codigo || '-'}</td>
-                      <td className="px-6 py-4">{row.produto}</td>
-                      <td className="px-6 py-4">{row.cor}</td>
-                      <td className="px-6 py-4">{row.tamanho}</td>
-                      <td className="px-6 py-4 text-right">{row.qtdCortada || '-'}</td>
-                      <td className="px-6 py-4 text-right">{formatNumber(row.qtdVendida)}</td>
-                      <td className="px-6 py-4 text-right text-[#adb85c] font-medium">{formatCurrency(row.faturado)}</td>
-                      <td className="px-6 py-4 text-right">
-                        <span className={`px-2 py-1 rounded-full text-xs font-bold ${
-                          row.percentualVendido > 80 ? 'bg-[#d4db9b] text-[#606633]' :
-                          row.percentualVendido > 50 ? 'bg-yellow-100 text-yellow-700' :
-                          row.qtdCortada === 0 ? 'bg-gray-100 text-gray-500' : 'bg-red-100 text-red-700'
-                        }`}>
-                          {row.qtdCortada > 0 ? `${row.percentualVendido.toFixed(1)}%` : 'N/A'}
-                        </span>
-                      </td>
-                    </tr>
-                  ))
+                  paginatedTableData.map((row) => {
+                    let badgeClass = '';
+                    let badgeText = '';
+                    
+                    if (row.qtdCortada === 0) {
+                        badgeClass = 'bg-gray-100 text-gray-400';
+                        badgeText = '-';
+                    } else {
+                        // Clean Percentage logic
+                        const pct = row.percentualVendido;
+                        badgeText = `${pct.toFixed(1)}%`;
+                        
+                        if (pct > 100) {
+                            // Purple for > 100% (Stock turnover/old stock consumption)
+                            badgeClass = 'bg-purple-100 text-purple-700 font-bold';
+                        } else if (pct >= 80) {
+                            badgeClass = 'bg-[#d4db9b] text-[#606633] font-bold';
+                        } else if (pct >= 50) {
+                             badgeClass = 'bg-yellow-100 text-yellow-700';
+                        } else {
+                             badgeClass = 'bg-red-50 text-red-600';
+                        }
+                    }
+
+                    return (
+                        <tr key={row.id} className="bg-white border-b hover:bg-gray-50 transition-colors">
+                        <td className="px-6 py-4 font-medium text-gray-900">{row.codigo || '-'}</td>
+                        <td className="px-6 py-4 max-w-[200px] truncate" title={row.produto}>{row.produto}</td>
+                        <td className="px-6 py-4">{row.cor}</td>
+                        <td className="px-6 py-4">{row.tamanho}</td>
+                        <td className="px-6 py-4 text-right">{row.qtdCortada || '-'}</td>
+                        <td className="px-6 py-4 text-right">{formatNumber(row.qtdVendida)}</td>
+                        <td className="px-6 py-4 text-right text-[#adb85c] font-medium">{formatCurrency(row.faturado)}</td>
+                        <td className="px-6 py-4 text-right">
+                            <span className={`px-3 py-1 rounded-full text-xs text-center min-w-[3.5rem] inline-block ${badgeClass}`}>
+                            {badgeText}
+                            </span>
+                        </td>
+                        </tr>
+                    );
+                  })
                 ) : (
                   <tr>
                     <td colSpan={8} className="px-6 py-8 text-center text-gray-500">
@@ -636,7 +703,6 @@ const Dashboard: React.FC<DashboardProps> = ({ data, onReset }) => {
               </button>
               <div className="flex gap-1">
                 {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
-                  // Simple pagination logic to show current window
                   let pageNum = i + 1;
                   if (totalPages > 5 && currentPage > 3) {
                      pageNum = currentPage - 3 + i;

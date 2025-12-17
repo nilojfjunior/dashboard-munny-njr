@@ -1,4 +1,4 @@
-import { CleanedSaleRecord, AggregatedData, DashboardMetrics, DetailedTableRow } from '../types';
+import { CleanedSaleRecord, AggregatedData, DashboardMetrics, DetailedTableRow, CorteRecord } from '../types';
 import * as XLSX from 'xlsx';
 
 // Helper to normalize keys slightly
@@ -12,40 +12,24 @@ const cleanNumber = (val: any): number => {
     clean = clean.replace(/[^\d,.-]/g, ''); 
     
     // Heuristic for BRL vs US parsing
-    // BRL: 1.000,00
-    // US: 1,000.00
-    
     const lastDotIndex = clean.lastIndexOf('.');
     const lastCommaIndex = clean.lastIndexOf(',');
     
-    // Case 1: Both exist. 
-    // If comma is after dot -> BRL (1.000,00) -> Remove dots, swap comma
-    // If dot is after comma -> US (1,000.00) -> Remove commas
     if (lastDotIndex !== -1 && lastCommaIndex !== -1) {
         if (lastCommaIndex > lastDotIndex) {
-            // BRL
             clean = clean.replace(/\./g, '').replace(',', '.');
         } else {
-            // US
             clean = clean.replace(/,/g, '');
         }
     } 
-    // Case 2: Only Comma
-    // 100,00 -> BRL Decimal
     else if (lastCommaIndex !== -1) {
         clean = clean.replace(',', '.');
     }
-    // Case 3: Only Dot
-    // 1.000 -> Is it 1000 (BRL thousand) or 1.0 (US decimal)?
-    // Assumption: In this specific context (Sales Dashboard pt-BR), 
-    // if the structure is exactly 3 digits after dot, it's likely a thousand separator.
     else if (lastDotIndex !== -1) {
         const parts = clean.split('.');
-        // If last part has 3 digits and we have at least one dot, assume thousands.
         if (parts.length > 1 && parts[parts.length - 1].length === 3) {
             clean = clean.replace(/\./g, '');
         }
-        // else assume decimal (e.g. 10.5, 10.99)
     }
     
     return parseFloat(clean) || 0;
@@ -65,7 +49,6 @@ const formatDate = (val: any): string => {
   // 1. Handle Excel Date Object
   if (val instanceof Date) {
     const year = val.getFullYear();
-    // Safety check: Filter out Excel "Zero" dates (1899) and very old dates
     if (year < 2000) return ''; 
     const month = String(val.getMonth() + 1).padStart(2, '0');
     const day = String(val.getDate()).padStart(2, '0');
@@ -74,24 +57,17 @@ const formatDate = (val: any): string => {
 
   // 2. Handle Excel Serial Number
   if (typeof val === 'number') {
-    // Basic check to avoid small numbers (0, 1, 2...) being treated as 1900 dates
-    // 36526 is approx year 2000.
     if (val < 36526) return ''; 
-
     const date = new Date(Math.round((val - 25569) * 86400 * 1000));
     if (isNaN(date.getTime())) return '';
-    
     const year = date.getFullYear();
     if (year < 2000) return '';
-
     return date.toISOString().split('T')[0];
   }
 
   // 3. Handle Strings
   if (typeof val === 'string') {
       const v = val.trim();
-
-      // Priority: DD/MM/YYYY (Standard Brazil)
       const brDateMatch = v.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);
       if (brDateMatch) {
         const day = brDateMatch[1].padStart(2, '0');
@@ -99,29 +75,21 @@ const formatDate = (val: any): string => {
         let yearStr = brDateMatch[3];
         let year = parseInt(yearStr);
         if (year < 100) year += 2000;
-        
         if (year < 2000) return '';
         return `${year}-${month}-${day}`;
       }
-
-      // Fallback: Month-Year (Ago-25)
       const monthYearMatch = v.toLowerCase().match(/^([a-z]{3})[\s\-\/](\d{2,4})$/);
       if (monthYearMatch) {
         const mStr = monthYearMatch[1];
         const yStr = monthYearMatch[2];
-        
         if (ptMonths.hasOwnProperty(mStr)) {
           let year = parseInt(yStr);
           if (year < 100) year += 2000; 
-          
           if (year < 2000) return '';
-
           const month = ptMonths[mStr] + 1;
           return `${year}-${String(month).padStart(2, '0')}-01`;
         }
       }
-
-      // Fallback: ISO format yyyy-mm-dd
       if (v.match(/^\d{4}-\d{2}-\d{2}$/)) {
          const y = parseInt(v.substring(0, 4));
          if (y < 2000) return '';
@@ -142,7 +110,6 @@ export const parseExcelFile = async (file: File): Promise<CleanedSaleRecord[]> =
         const sheetName = workbook.SheetNames[0];
         const sheet = workbook.Sheets[sheetName];
         
-        // Use header: 1 to get array of arrays (Matrix)
         const rows: any[][] = XLSX.utils.sheet_to_json(sheet, { header: 1 });
 
         if (rows.length === 0) {
@@ -150,7 +117,6 @@ export const parseExcelFile = async (file: File): Promise<CleanedSaleRecord[]> =
           return;
         }
 
-        // Detect Header Row
         let headerRowIndex = -1;
         const keywords = ['loja', 'filial', 'categoria', 'produto', 'cor', 'tamanho', 'valor', 'total', 'qtd', 'quant', 'código', 'codigo'];
         
@@ -164,62 +130,43 @@ export const parseExcelFile = async (file: File): Promise<CleanedSaleRecord[]> =
             }
         }
 
-        // Map column indices
         const headers = headerRowIndex !== -1 ? rows[headerRowIndex].map(h => normalizeStr(h)) : [];
-        
-        // Helper to find specific keyword sets
         const findSpecificIdx = (kws: string[]) => headers.findIndex(h => kws.some(k => h.includes(k)));
 
         const idxLoja = findSpecificIdx(['loja', 'filial']);
         const idxCat = findSpecificIdx(['categoria']);
         const idxSub = findSpecificIdx(['sub', 'grupo']);
-        
-        // Product Logic
-        // Col D is Description (Produto)
         let idxProd = findSpecificIdx(['produto', 'descricao', 'descrição']);
-        if (idxProd === -1) idxProd = 3; // Fallback to Col D (Index 3) if strictly following structure
+        if (idxProd === -1) idxProd = 3; 
 
-        // Col C is Code (Código)
         let idxCodigo = findSpecificIdx(['código', 'codigo', 'referência', 'referencia', 'ref']);
-        if (idxCodigo === -1) idxCodigo = 2; // Fallback to Col C (Index 2)
+        if (idxCodigo === -1) idxCodigo = 2; 
 
-        // Col E is Cor
         let idxCor = findSpecificIdx(['cor']);
-        if (idxCor === -1) idxCor = 4; // Fallback to Col E (Index 4)
+        if (idxCor === -1) idxCor = 4;
 
-        // Col F is Tamanho
         let idxTam = findSpecificIdx(['tamanho', 'tam']);
-        if (idxTam === -1) idxTam = 5; // Fallback to Col F (Index 5)
+        if (idxTam === -1) idxTam = 5; 
         
-        // NEW COLUMNS: Modelo and Colecao
         let idxColecao = findSpecificIdx(['coleção', 'colecao']);
         let idxModelo = findSpecificIdx(['modelo']);
-
-        // STOCK COLUMN (Estoque)
         let idxEstoque = findSpecificIdx(['estoque', 'saldo', 'disponivel', 'disponível', 'atual']);
 
-        // Fallbacks for new columns if header search fails
-        // User spec: Colecao = G (Index 6), Modelo = I (Index 8)
         if (idxColecao === -1) idxColecao = 6;
         if (idxModelo === -1) idxModelo = 8;
         
-        // QUANTITY COLUMN LOGIC:
         let idxQtd = findSpecificIdx(['quant', 'qtde', 'qtd', 'peças', 'pecas']);
         if (idxQtd === -1) {
              const exactTotalIdx = headers.findIndex(h => h === 'total');
              if (exactTotalIdx !== -1) idxQtd = exactTotalIdx;
         }
-        // 3. HARD FALLBACK: Column K (Index 10)
         if (idxQtd === -1) idxQtd = 10;
         
-        // VALUE COLUMN LOGIC:
         let idxVal = findSpecificIdx(['líquido', 'liquido', 'venda líquida', 'total líquido']);
         if (idxVal === -1) idxVal = findSpecificIdx(['valor total', 'venda']);
         if (idxVal === -1) idxVal = findSpecificIdx(['valor']);
-        // 4. HARD FALLBACK: Column O (Index 14)
         if (idxVal === -1) idxVal = 14; 
         
-        // DATE COLUMN: Prioritize "Data" header, otherwise FORCE Index 0 (Column A)
         let idxData = findSpecificIdx(['data', 'emissao', 'venda', 'periodo', 'mês']);
         if (idxData === -1) idxData = 0; 
 
@@ -256,7 +203,6 @@ export const parseExcelFile = async (file: File): Promise<CleanedSaleRecord[]> =
           };
         });
 
-        // Strict Filter: Must have valid Date (Year >= 2000) AND (Value > 0 OR Qty > 0)
         const validData = cleanedData.filter(d => d.data !== '' && (d.valorTotal > 0 || d.quantidade > 0));
         validData.sort((a, b) => a.data.localeCompare(b.data));
 
@@ -266,6 +212,78 @@ export const parseExcelFile = async (file: File): Promise<CleanedSaleRecord[]> =
       }
     };
 
+    reader.onerror = (error) => reject(error);
+    reader.readAsBinaryString(file);
+  });
+};
+
+export const parseCorteFile = async (file: File): Promise<CorteRecord[]> => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    
+    reader.onload = (e) => {
+      try {
+        const data = e.target?.result;
+        const workbook = XLSX.read(data, { type: 'binary' });
+        const sheetName = workbook.SheetNames[0];
+        const sheet = workbook.Sheets[sheetName];
+        
+        const rows: any[][] = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+
+        if (rows.length === 0) {
+          resolve([]);
+          return;
+        }
+
+        let headerRowIndex = -1;
+        const keywords = ['produto', 'referência', 'codigo', 'cor', 'tamanho', 'qtd', 'cortada'];
+        
+        for (let i = 0; i < Math.min(rows.length, 10); i++) {
+            const rowStr = rows[i].map(c => normalizeStr(c)).join(' ');
+            let matches = 0;
+            keywords.forEach(k => { if (rowStr.includes(k)) matches++; });
+            if (matches >= 2) { 
+                headerRowIndex = i;
+                break;
+            }
+        }
+
+        const headers = headerRowIndex !== -1 ? rows[headerRowIndex].map(h => normalizeStr(h)) : [];
+        const findSpecificIdx = (kws: string[]) => headers.findIndex(h => kws.some(k => h.includes(k)));
+
+        // CRITICAL FIX: Do NOT include 'produto' in the search for code/ref, 
+        // as it often matches the description column instead.
+        let idxCodigo = findSpecificIdx(['código', 'codigo', 'referência', 'referencia', 'ref']);
+        
+        let idxCor = findSpecificIdx(['cor']);
+        let idxTam = findSpecificIdx(['tamanho', 'tam']);
+        let idxQtd = findSpecificIdx(['qtd', 'quantidade', 'total', 'cortado', 'corte']);
+
+        // Fallbacks based on common positions if headers not found or ambiguous
+        if (idxCodigo === -1) idxCodigo = 0; // Assume Col A is Code/Ref
+        if (idxCor === -1) idxCor = 2; // Assume Col C is Color (A=Ref, B=Desc)
+        if (idxTam === -1) idxTam = 3; // Assume Col D is Size
+        if (idxQtd === -1) idxQtd = 4; // Assume Col E is Qty
+
+        const dataRows = headerRowIndex !== -1 ? rows.slice(headerRowIndex + 1) : rows;
+
+        const cleanedData: CorteRecord[] = dataRows.map((row) => {
+          const getVal = (idx: number) => (idx !== -1 && row[idx] !== undefined) ? row[idx] : null;
+
+          return {
+            codigo: idxCodigo !== -1 ? String(getVal(idxCodigo) || '').trim() : '',
+            cor: idxCor !== -1 ? String(getVal(idxCor) || 'N/A').trim() : 'N/A',
+            tamanho: idxTam !== -1 ? String(getVal(idxTam) || 'U').trim() : 'U',
+            quantidade: cleanNumber(getVal(idxQtd)) || 0
+          };
+        }).filter(r => r.codigo !== '' && r.quantidade > 0);
+
+        resolve(cleanedData);
+
+      } catch (error) {
+        reject(error);
+      }
+    };
     reader.onerror = (error) => reject(error);
     reader.readAsBinaryString(file);
   });
@@ -302,13 +320,15 @@ export const aggregateBy = (
     .sort((a, b) => b.value - a.value); 
 };
 
-export const prepareDataTable = (data: CleanedSaleRecord[]): DetailedTableRow[] => {
-  // Key: Code + Color + Size
+export const prepareDataTable = (data: CleanedSaleRecord[], corteData: CorteRecord[] = []): DetailedTableRow[] => {
+  // Key: Code + Color + Size (Normalized)
   const map = new Map<string, DetailedTableRow>();
+  const genKey = (code: string, color: string, size: string) => 
+    `${normalizeStr(code)}|${normalizeStr(color)}|${normalizeStr(size)}`;
 
+  // 1. Process Sales Data
   data.forEach(item => {
-    // Composite key to aggregate unique products
-    const key = `${item.codigo}|${item.cor}|${item.tamanho}`;
+    const key = genKey(item.codigo, item.cor, item.tamanho);
     
     if (!map.has(key)) {
       map.set(key, {
@@ -317,7 +337,7 @@ export const prepareDataTable = (data: CleanedSaleRecord[]): DetailedTableRow[] 
         produto: item.produto,
         cor: item.cor,
         tamanho: item.tamanho,
-        qtdCortada: 0, // Placeholder for future data
+        qtdCortada: 0, 
         qtdVendida: 0,
         faturado: 0,
         percentualVendido: 0
@@ -329,10 +349,33 @@ export const prepareDataTable = (data: CleanedSaleRecord[]): DetailedTableRow[] 
     entry.faturado += item.valorTotal;
   });
 
+  // 2. Process Corte Data (Merge)
+  corteData.forEach(item => {
+    const key = genKey(item.codigo, item.cor, item.tamanho);
+    
+    if (map.has(key)) {
+      const entry = map.get(key)!;
+      entry.qtdCortada += item.quantidade;
+    } else {
+      // Add items that were cut but not sold
+      map.set(key, {
+        id: key,
+        codigo: item.codigo,
+        produto: 'Sem Venda', // Fallback
+        cor: item.cor,
+        tamanho: item.tamanho,
+        qtdCortada: item.quantidade,
+        qtdVendida: 0,
+        faturado: 0,
+        percentualVendido: 0
+      });
+    }
+  });
+
   return Array.from(map.values()).map(entry => {
-    // Logic for Sell-Through based on Cut Qty (when available)
-    // If Cut is 0, we can't really calculate % Cut/Sold correctly, but user wants column.
-    // % = (Sold / Cut) * 100. If Cut is 0, it's Infinity or 0 depending on logic.
+    // Logic for Sell-Through based on Cut Qty
+    // If QtdCortada is 0, we can't calculate a valid percentage based on production, 
+    // but we can default to 100% or N/A logic in display.
     const pct = entry.qtdCortada > 0 ? (entry.qtdVendida / entry.qtdCortada) * 100 : 0;
     return { ...entry, percentualVendido: pct };
   }).sort((a, b) => a.codigo.localeCompare(b.codigo));
@@ -363,13 +406,16 @@ export const sortSizes = (data: AggregatedData[]): AggregatedData[] => {
   });
 };
 
-export const calculateMetrics = (data: CleanedSaleRecord[]): DashboardMetrics => {
+export const calculateMetrics = (data: CleanedSaleRecord[], corteData: CorteRecord[] = []): DashboardMetrics => {
   const totalRevenue = data.reduce((acc, curr) => acc + curr.valorTotal, 0);
   const totalItems = data.reduce((acc, curr) => acc + curr.quantidade, 0);
   const totalStock = data.reduce((acc, curr) => acc + curr.estoque, 0);
+  const totalCut = corteData.reduce((acc, curr) => acc + curr.quantidade, 0);
   
-  // Sell-Through Rate = Sold / (Sold + Stock)
-  // Assumption: Manufactured = Sold + Remaining Stock
+  // Sell-Through Rate = Sold / (Sold + Stock) 
+  // OR based on Cut if available. But typically standard Sell-Through is based on stock on hand + sold.
+  // If we have totalCut, we could do (Sold / Cut), but stick to standard definition or use Cut if provided?
+  // Let's stick to the previous definition for the main KPI, but add Cut as a separate metric.
   const totalManufactured = totalItems + totalStock;
   const sellThroughRate = totalManufactured > 0 ? (totalItems / totalManufactured) * 100 : 0;
 
@@ -393,6 +439,7 @@ export const calculateMetrics = (data: CleanedSaleRecord[]): DashboardMetrics =>
     averageTicket: data.length > 0 ? totalRevenue / data.length : 0,
     topStore,
     totalStock,
+    totalCut,
     sellThroughRate
   };
 };

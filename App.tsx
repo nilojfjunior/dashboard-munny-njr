@@ -1,17 +1,20 @@
 import React, { useState } from 'react';
 import DataUploader from './components/DataUploader';
 import Dashboard from './components/Dashboard';
-import { CleanedSaleRecord } from './types';
+import { CleanedSaleRecord, CorteRecord } from './types';
 
 const App: React.FC = () => {
   const [data, setData] = useState<CleanedSaleRecord[] | null>(null);
+  const [corteData, setCorteData] = useState<CorteRecord[]>([]);
 
-  const handleDataLoaded = (loadedData: CleanedSaleRecord[]) => {
+  const handleDataLoaded = (loadedData: CleanedSaleRecord[], loadedCorte: CorteRecord[]) => {
     setData(loadedData);
+    setCorteData(loadedCorte);
   };
 
   const handleReset = () => {
     setData(null);
+    setCorteData([]);
   };
 
   return (
@@ -29,7 +32,7 @@ const App: React.FC = () => {
           <DataUploader onDataLoaded={handleDataLoaded} />
         </main>
       ) : (
-        <Dashboard data={data} onReset={handleReset} />
+        <Dashboard data={data} corteData={corteData} onReset={handleReset} />
       )}
     </div>
   );

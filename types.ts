@@ -19,6 +19,13 @@ export interface CleanedSaleRecord {
   estoque: number;
 }
 
+export interface CorteRecord {
+  codigo: string;
+  cor: string;
+  tamanho: string;
+  quantidade: number;
+}
+
 export interface AggregatedData {
   name: string;
   value: number;
@@ -33,6 +40,7 @@ export interface DashboardMetrics {
   averageTicket: number;
   topStore: string;
   totalStock: number;
+  totalCut: number; // Novo campo
   sellThroughRate: number;
 }
 
